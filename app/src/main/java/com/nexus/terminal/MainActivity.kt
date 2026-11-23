@@ -87,10 +87,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.documentfile.provider.DocumentFile
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 private val Navy = Color(0xFF080B16)
 private val Panel = Color(0xFF11182A)
@@ -234,16 +230,25 @@ private fun ProjectRow(name: String, time: String, accent: Color) {
 @Composable
 private fun TerminalScreen() {
     var command by rememberSaveable { mutableStateOf("echo NEXUS TERMINAL") }
-    var output by rememberSaveable { mutableStateOf("NEXUS shell\nDigite um comando para executar no shell disponível do Android.\n") }
+    var output by rememberSaveable { mutableStateOf("NEXUS shell persistente\nA sessão mantém cd e variáveis entre comandos.\n") }
     val history = remember { mutableStateListOf<String>() }
     val scope = rememberCoroutineScope()
     var running by remember { mutableStateOf(false) }
-    var process by remember { mutableStateOf<Process?>(null) }
-    var job by remember { mutableStateOf<Job?>(null) }
+    val session = remember {
+        TerminalSession(
+            onOutput = { chunk -> scope.launch { output += chunk } },
+            onCommandDone = { scope.launch { running = false } },
+            onExit = { scope.launch { running = false } }
+        )
+    }
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        session.start()
+        onDispose { session.close() }
+    }
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.weight(1f)) { Text("Terminal", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold); Text("Shell Android • saída real", color = Muted, fontSize = 12.sp) }
-            AssistChip(onClick = { output = "NEXUS shell\n" }, label = { Text("Limpar") }, leadingIcon = { Icon(Icons.Default.Refresh, null) })
+            Column(Modifier.weight(1f)) { Text("Terminal", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold); Text("Sessão shell persistente • saída em tempo real", color = Muted, fontSize = 12.sp) }
+            AssistChip(onClick = { output = "NEXUS shell persistente\n" }, label = { Text("Limpar") }, leadingIcon = { Icon(Icons.Default.Refresh, null) })
         }
         Spacer(Modifier.height(12.dp))
         Surface(Modifier.weight(1f).fillMaxWidth(), color = Color(0xFF05070D), shape = RoundedCornerShape(16.dp)) {
@@ -258,19 +263,10 @@ private fun TerminalScreen() {
             OutlinedTextField(value = command, onValueChange = { command = it }, modifier = Modifier.weight(1f), singleLine = true, label = { Text("Comando") })
             Spacer(Modifier.width(6.dp))
             IconButton(onClick = {
-                if (running) { process?.destroy(); job?.cancel(); running = false }
+                if (running) { session.interrupt(); running = false; output += "\n[processo interrompido — sessão reiniciada no próximo comando]\n" }
                 else {
                     val requested = command.trim(); if (requested.isEmpty()) return@IconButton
-                    history.add(requested); running = true
-                    job = scope.launch {
-                        val result = withContext(Dispatchers.IO) {
-                            try {
-                                val p = ProcessBuilder("/system/bin/sh", "-c", requested).redirectErrorStream(true).start(); process = p
-                                val text = p.inputStream.bufferedReader().readText(); p.waitFor(); text.ifBlank { "(sem saída)" }
-                            } catch (e: Exception) { "Erro: ${e.message}" }
-                        }
-                        output += "\n$ $requested\n$result\n"; process = null; running = false
-                    }
+                    history.add(requested); running = true; output += "\n$ $requested\n"; session.execute(requested)
                 }
             }) { Icon(if (running) Icons.Default.Stop else Icons.Default.PlayArrow, if (running) "Parar" else "Executar", tint = if (running) Color(0xFFF87171) else Violet) }
         }
